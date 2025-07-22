@@ -517,21 +517,43 @@ class treetool:
             # If the model has more than 10 points
             if len(indices) > 10:
                 # If the model finds an upright cylinder
-                if (
-                    abs(np.dot(model[3:6], [0, 0, 1]) / np.linalg.norm(model[3:6]))
-                    > 0.5
-                ):
+                if abs(np.dot(model[3:6], [0, 0, 1]) / np.linalg.norm(model[3:6])) > 0.5:
                     # Get centroid
                     model = np.array(model)
                     Z = 1.3 + p[1][2]
                     Y = model[1] + model[4] * (Z - model[2]) / model[5]
                     X = model[0] + model[3] * (Z - model[2]) / model[5]
                     model[0:3] = np.array([X, Y, Z])
-                    # make sure the vector is pointing upward
                     model[3:6] = utils.similarize(model[3:6], [0, 0, 1])
-                    # Calculate tree height
-                    max_height = np.max(stem_points[:, 2])
-                    final_stems.append({"tree": stem_points[indices], "model": model, 'ground': p[1][2], "height": max_height - p[1][2]})
+
+                    # 新しい樹高計算
+                    xc, yc = p[1][0], p[1][1]
+                    ng_points = self.non_ground_cloud.xyz
+                    search_radius_h = 0.3
+                    distances = np.sqrt((ng_points[:, 0] - xc) ** 2 + (ng_points[:, 1] - yc) ** 2)
+                    near_points = ng_points[distances < search_radius_h]
+
+                    if len(near_points) >= 10:
+                        z_bins = np.arange(np.min(near_points[:, 2]), np.max(near_points[:, 2]) + 0.05, 0.1)
+                        max_z = None
+                        for i_bin in range(len(z_bins) - 1):
+                            bin_mask = (near_points[:, 2] >= z_bins[i_bin]) & (near_points[:, 2] < z_bins[i_bin+1])
+                            if np.sum(bin_mask) >= 10:
+                                max_z = z_bins[i_bin+1]
+
+                        if max_z is not None:
+                            height = max_z - p[1][2]
+                        else:
+                            height = np.max(near_points[:, 2]) - p[1][2]
+                    else:
+                        height = np.max(stem_points[:, 2]) - p[1][2]
+
+                    final_stems.append({
+                        "tree": stem_points[indices],
+                        "model": model,
+                        'ground': p[1][2],
+                        "height": height
+                    })
                     visualization_cylinders.append(
                         utils.makecylinder(model=model, height=7, density=60)
                     )
@@ -539,6 +561,8 @@ class treetool:
         self.finalstems = final_stems
         self.visualization_cylinders = visualization_cylinders
         print(f"STEP6: {len(self.finalstems)} stems modeled as cylinders.")
+
+
 
 
     def step_7_ellipse_fit(self, height_ll=-1,height_ul=-1):
