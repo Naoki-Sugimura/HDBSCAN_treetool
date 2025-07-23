@@ -32,7 +32,8 @@ import os
 import open3d as o3d
 import scipy.spatial
 from skimage.measure import CircleModel, ransac
-from sklearn.cluster import DBSCAN
+import hdbscan
+
 
 
 class treetool:
@@ -167,186 +168,93 @@ class treetool:
         self.filtered_points = pclpy.pcl.PointCloud.PointXYZ(only_horizontal_points)
         self.filtered_normals = only_horizontal_normals
 
-    # def step_2_5_detect_trees(self, method='ransac'):
-    #     # """
-    #     # 高さ1.2mのスライスを取得し、1m×1mのウィンドウで円形の点群を探し、幹として識別・番号付け。
-    #     # `method` 引数で 'circle'（単純なCircleModel）または 'ransac'（RANSACによる円検出）を選択可能。
-    #     # """
-    #     self.detected_trees = []
 
-    #     # 高さ1.2m ± 0.1m の範囲にある点を抽出
-    #     height = 1.2
-    #     tol = 0.1
-    #     mask = (self.filtered_points.xyz[:, 2] > height - tol) & (self.filtered_points.xyz[:, 2] < height + tol)
-    #     slice_points = self.filtered_points.xyz[mask]
+    def step_2_5_detect_trees(self, height=1.3, tol=0.2, hdbscan_min_cluster_size=15):
+            """
+            【円検出をせずにHDBSCANを直接適用する手法に変更】
+            指定された高さで点群をスライスし、その2D座標に対して直接HDBSCANを適用して樹木の位置を検出する。
+            """
+            self.detected_trees = []
 
-    #     if len(slice_points) == 0:
-    #         print("Warning: No points found in the 1.2m height slice.")
-    #         return
+            # 指定高さの点群を抽出
+            mask = (self.filtered_points.xyz[:, 2] > height - tol) & (self.filtered_points.xyz[:, 2] < height + tol)
+            slice_points = self.filtered_points.xyz[mask]
+            self.sliced_points = slice_points
 
-    #     # 1m×1mのグリッドに分割
-    #     min_x, min_y = np.min(slice_points[:, :2], axis=0)
-    #     max_x, max_y = np.max(slice_points[:, :2], axis=0)
+            if len(slice_points) < hdbscan_min_cluster_size:
+                print(f"Warning: Not enough points found in the {height}m height slice.")
+                return
 
-    #     grid_size = 1.0
-    #     tree_clusters = []
+            # スライスした点群の2D座標(X, Y)に直接HDBSCANを適用
+            points_2d = slice_points[:, :2]
+            clusterer = hdbscan.HDBSCAN(min_cluster_size=hdbscan_min_cluster_size, allow_single_cluster=True)
+            labels = clusterer.fit_predict(points_2d)
 
-    #     for x in np.arange(min_x, max_x, grid_size):
-    #         for y in np.arange(min_y, max_y, grid_size):
-    #             mask = (slice_points[:, 0] >= x) & (slice_points[:, 0] < x + grid_size) & \
-    #                 (slice_points[:, 1] >= y) & (slice_points[:, 1] < y + grid_size)
-    #             cell_points = slice_points[mask]
+            unique_trees = []
+            # ノイズ(-1)を除いたユニークなクラスタラベルでループ
+            for label in np.unique(labels[labels != -1]):
+                # クラスタに属する点のインデックスを取得
+                cluster_mask = (labels == label)
+                
+                # クラスタの重心を計算
+                cluster_points_2d = points_2d[cluster_mask]
+                xc = np.mean(cluster_points_2d[:, 0])
+                yc = np.mean(cluster_points_2d[:, 1])
+                
+                # 次のステップに必要なのは中心座標のみ。半径はダミー値(0)を渡す。
+                unique_trees.append((xc, yc, 0))
 
-    #             if len(cell_points) > 5:
-    #                 points_2d = cell_points[:, :2]
+            self.detected_trees = unique_trees
+            print(f"STEP2.5 Detected {len(unique_trees)} unique trees by applying HDBSCAN directly to the point slice.")
 
-    #                 try:
-    #                     if method == 'ransac':
-    #                         model_robust, inliers = ransac(
-    #                             points_2d, CircleModel, min_samples=3,
-    #                             residual_threshold=0.03, max_trials=250
-    #                         )
-    #                         xc, yc, r = model_robust.params
-    #                         if 0.03 < r < 0.5 and np.sum(inliers) > 5:
-    #                             tree_clusters.append((xc, yc, r))
+        def step_3_cluster_trees(self, min_cluster_size=40, initial_radius=0.4):
+            """
+            【HDBSCAN使用】
+            step_2_5で検出された樹木中心の周囲の3D点を集め、HDBSCANを適用して幹の点群クラスタを形成する。
+            """
+            if not hasattr(self, 'detected_trees') or self.detected_trees is None:
+                print("Error: detected_trees is not set. Did step_2_5_detect_trees() run?")
+                return
 
-    #                     elif method == 'circle':
-    #                         model = CircleModel()
-    #                         if model.estimate(points_2d):
-    #                             xc, yc, r = model.params
-    #                             if 0.03 < r < 0.5:
-    #                                 tree_clusters.append((xc, yc, r))
-    #                 except Exception as e:
-    #                     continue
-
-    #     self.detected_trees = tree_clusters
-    #     print(f"STEP2.5 Detected {len(tree_clusters)} trees using method '{method}'.")
-
-    def step_2_5_detect_trees(self, height=2.5, tol=0.2, grid_size=0.5, overlap=0.1,
-                          min_radius=0.05, max_radius=0.5, use_ransac=False,
-                          ransac_residual_threshold=0.03, ransac_max_trials=200,
-                          dbscan_eps=0.2):
-    # """
-    # 高さスライスとグリッド探索で円形幹を検出し、self.detected_trees に [(xc, yc, r), ...] を格納。
-    # """
-        self.detected_trees = []
-
-        # 指定高さの点群を抽出
-        mask = (self.filtered_points.xyz[:, 2] > height - tol) & (self.filtered_points.xyz[:, 2] < height + tol)
-        slice_points = self.filtered_points.xyz[mask]
-        self.sliced_points = slice_points
-
-        if len(slice_points) == 0:
-            print(f"Warning: No points found in the {height}m height slice.")
-            return
-
-        min_x, min_y = np.min(slice_points[:, :2], axis=0)
-        max_x, max_y = np.max(slice_points[:, :2], axis=0)
-
-        tree_candidates = []
-        x_vals = np.arange(min_x, max_x, grid_size - overlap)
-        y_vals = np.arange(min_y, max_y, grid_size - overlap)
-
-        for x in x_vals:
-            for y in y_vals:
-                mask = (slice_points[:, 0] >= x) & (slice_points[:, 0] <= x + grid_size) & \
-                    (slice_points[:, 1] >= y) & (slice_points[:, 1] <= y + grid_size)
-                cell_points = slice_points[mask]
-
-                if len(cell_points) > 5:
-                    if use_ransac:
-                        try:
-                            model_robust, inliers = ransac(cell_points[:, :2], CircleModel, min_samples=3,
-                                                        residual_threshold=ransac_residual_threshold,
-                                                        max_trials=ransac_max_trials)
-                            xc, yc, r = model_robust.params
-                            if min_radius < r < max_radius:
-                                tree_candidates.append([xc, yc, r])
-                        except Exception:
-                            continue
-                    else:
-                        model = CircleModel()
-                        if model.estimate(cell_points[:, :2]):
-                            xc, yc, r = model.params
-                            if min_radius < r < max_radius:
-                                tree_candidates.append([xc, yc, r])
-
-        if not tree_candidates:
-            print("No tree circles detected.")
-            return
-
-        tree_candidates = np.array(tree_candidates)
-        self.detected_circles = tree_candidates
-
-        coords = tree_candidates[:, :2]
-        clustering = DBSCAN(eps=dbscan_eps, min_samples=1).fit(coords)
-
-        unique_trees = []
-        for label in np.unique(clustering.labels_):
-            members = tree_candidates[clustering.labels_ == label]
-            xc_avg = np.mean(members[:, 0])
-            yc_avg = np.mean(members[:, 1])
-            r_avg = np.mean(members[:, 2])
-            unique_trees.append((xc_avg, yc_avg, r_avg))
-
-        self.detected_trees = unique_trees
-        print(f"STEP2.5 Detected {len(unique_trees)} unique trees using {'RANSAC' if use_ransac else 'CircleModel'}.")
-
-
-    def step_3_cluster_trees(self, tolerance=0.1, min_cluster_size=40, max_cluster_size=6000000):
-    # """
-    # 円形検出後、まず中心から半径0.3m以内の点を集め、
-    # その後、tolerance=0.1のユークリッドクラスタリングを適用して幹を形成する。
-    # """
-        if not hasattr(self, 'detected_trees'):
-            print("Error: detected_trees is not set. Did step_2_5_detect_trees() run?")
-            return
-
-        if len(self.detected_trees) == 0:
-            print("Warning: No trees detected. Skipping clustering.")
-            return
-        
-        final_clusters = []
-
-        # 検出された各樹木候補に対して処理
-        for tree in self.detected_trees:
-            xc, yc, _ = tree
-
-            # ステップ1: 円形の中心から0.3m以内の点群を大まかに抽出
-            initial_mask = np.sqrt((self.filtered_points.xyz[:, 0] - xc)**2 + (self.filtered_points.xyz[:, 1] - yc)**2) < 0.3
-            initial_points = self.filtered_points.xyz[initial_mask]
-
-            # 大まかに集めた点群がmin_cluster_sizeより少ない場合はスキップ
-            if len(initial_points) < 40:
-                continue
-
-            # ステップ2: 抽出した点群に対し、tolerance=0.1でユークリッドクラスタリングを適用
-            # NumPy配列をPCLのPointCloud形式に変換
-            cloud_to_cluster = pclpy.pcl.PointCloud.PointXYZ(initial_points.astype(np.float32))
+            if len(self.detected_trees) == 0:
+                print("Warning: No trees detected. Skipping clustering.")
+                self.cluster_list = []
+                return
             
-            # クラスタリングオブジェクトの準備
-            tree_kdtree = pclpy.pcl.search.KdTree.PointXYZ()
-            tree_kdtree.setInputCloud(cloud_to_cluster)
+            final_clusters = []
 
-            ec = pclpy.pcl.segmentation.EuclideanClusterExtraction.PointXYZ()
-            ec.setClusterTolerance(tolerance)  # tolerance を 0.1 に設定
-            ec.setMinClusterSize(min_cluster_size) # 最小サイズも設定
-            ec.setMaxClusterSize(max_cluster_size) # 最大サイズも設定
-            ec.setSearchMethod(tree_kdtree)
-            ec.setInputCloud(cloud_to_cluster)
-            
-            # クラスタリングの実行
-            cluster_indices = pclpy.pcl.vectors.PointIndices()
-            ec.extract(cluster_indices)
+            # 検出された各樹木候補に対して処理
+            for tree in self.detected_trees:
+                xc, yc, _ = tree
 
-            # 抽出されたクラスタの中で最大のものを採用する
-            if cluster_indices:
-                largest_cluster_indices = max(cluster_indices, key=lambda x: len(x.indices))
-                largest_cluster_points = initial_points[largest_cluster_indices.indices]
-                final_clusters.append(largest_cluster_points)
+                # ステップ1: 樹木中心から initial_radius 以内の3D点群を大まかに抽出
+                initial_mask = np.sqrt((self.filtered_points.xyz[:, 0] - xc)**2 + (self.filtered_points.xyz[:, 1] - yc)**2) < initial_radius
+                initial_points = self.filtered_points.xyz[initial_mask]
 
-        self.cluster_list = final_clusters
-        print(f"STEP3 Clustered {len(self.cluster_list)} trees using new method.")
+                if len(initial_points) < min_cluster_size:
+                    continue
+
+                # ステップ2: 抽出した3D点群に対し、HDBSCANを適用
+                try:
+                    clusterer = hdbscan.HDBSCAN(min_cluster_size=min_cluster_size, min_samples=10, allow_single_cluster=True)
+                    labels = clusterer.fit_predict(initial_points)
+                    
+                    # ノイズ(-1)を除いたラベルを取得
+                    unique_labels = np.unique(labels[labels != -1])
+                    
+                    if len(unique_labels) > 0:
+                        # 最も大きいクラスタ（最も多くの点を持つ）を見つける
+                        largest_cluster_label = unique_labels[np.argmax([np.sum(labels == l) for l in unique_labels])]
+                        largest_cluster_points = initial_points[labels == largest_cluster_label]
+                        final_clusters.append(largest_cluster_points)
+                        
+                except Exception as e:
+                    print(f"Clustering failed for a tree candidate at ({xc:.2f}, {yc:.2f}): {e}")
+                    continue
+
+            self.cluster_list = final_clusters
+            print(f"STEP3 Clustered {len(self.cluster_list)} trees using HDBSCAN.")
+
 
 
     def step_4_group_stems(self, max_distance=0.4):
