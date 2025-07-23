@@ -1,348 +1,149 @@
-import pclpy
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from scipy.optimize import linear_sum_assignment
 import open3d as o3d
-import treetool.seg_tree as seg_tree
-import treetool.utils as utils
 import treetool.tree_tool as tree_tool
-from mpl_toolkits.mplot3d import Axes3D
 import pyvista as pv
+import matplotlib.pyplot as plt
+import random
 
-# 点群データの読み込み
-def load_point_cloud(file_path):
-    PointCloud = pclpy.pcl.PointCloud.PointXYZ()
-    pclpy.pcl.io.loadPCDFile(file_path, PointCloud)
-    return PointCloud
+def load_point_cloud_o3d(file_path):
+    """Open3Dで点群を読み込む"""
+    pcd = o3d.io.read_point_cloud(file_path)
+    if not pcd.has_points():
+        raise ValueError(f"Could not read point cloud from file: {file_path}")
+    return pcd
 
-# 点群をボクセル化する関数
-def voxelize_point_cloud(PointCloud, voxel_size):
-    voxelized = seg_tree.voxelize(PointCloud.xyz, voxel_size)
-    
-    # voxelizedがnumpy配列として返されることを期待する
-    print(f"Voxelized shape: {voxelized.shape}")
-    return voxelized
-
-# pclpyのPointCloudをNumPy配列に変換する関数
-def pcl_to_numpy(pcl_point_cloud):
-    # 点群データがすでにNumPy配列であればそのまま返す
-    if isinstance(pcl_point_cloud, np.ndarray):
-        return pcl_point_cloud
-    # pclpyのPointCloudからNumPy配列を取得
-    np_points = np.array(pcl_point_cloud.xyz)
-    
-    if np_points.shape[1] != 3:
-        raise ValueError(f"Expected point cloud data with shape (N, 3), but got shape {np_points.shape}")
-    
-    return np_points
-
-# pclpyのPointCloudをOpen3DのPointCloudに変換する関数
-def pcl_to_o3d(np_points):
-    # Open3DのPointCloudに変換
-    o3d_points = o3d.geometry.PointCloud()
-    o3d_points.points = o3d.utility.Vector3dVector(np_points)  # Open3DのPointCloudに変換
-    return o3d_points
-
-
-# 点群可視化の関数（Open3D）
-def visualize_point_cloud_o3d(PointCloud_list, voxel_size, tree_ids=None):
+def visualize_final_colored_clusters(original_pcd, final_clusters):
     """
-    可視化関数：点群をOpen3Dで表示し、tree_idsが指定されていればIDも表示する
-    """
-    vis = o3d.visualization.Visualizer()
-    vis.create_window()
+    元の点群データに、最終的なクラスタリング結果を色付けしてPyVistaで表示する。
 
-    for i, PointCloud in enumerate(PointCloud_list):
-        np_points = pcl_to_numpy(PointCloud)  # pclpyのPointCloudをNumPy配列に変換
-        
-        # Open3Dに変換
-        o3d_point_cloud = pcl_to_o3d(np_points)
-        vis.add_geometry(o3d_point_cloud)
-
-        # tree_idsが存在する場合、IDを表示
-        if tree_ids is not None:
-            tree_id = tree_ids[i]  # ID取得
-            tree_center = np.mean(np_points, axis=0)  # 木の中心を計算
-
-            # 木の中心に小さな球体を表示
-            label = o3d.geometry.TriangleMesh.create_sphere(radius=0.05)  # 小さな球
-            label.paint_uniform_color([1.0, 0.0, 0.0])  # 赤色
-            label.translate(tree_center)  # 球体を木の中心に配置
-
-            vis.add_geometry(label)
-
-    vis.run()
-    vis.destroy_window()
-
-def debug_visualize_point_cloud_o3d(PointCloud, tree_centers=None, tree_ids=None):
-    vis = o3d.visualization.Visualizer()
-    vis.create_window()
-    np_points = pcl_to_numpy(PointCloud)
-    o3d_point_cloud = pcl_to_o3d(np_points)
-    vis.add_geometry(o3d_point_cloud)
-    
-    if tree_centers and tree_ids:
-        for center, tree_id in zip(tree_centers, tree_ids):
-            label = o3d.geometry.TriangleMesh.create_sphere(radius=0.3)
-            label.paint_uniform_color([1, 0, 0])
-            label.translate(center)
-            vis.add_geometry(label)
-    
-    vis.run()
-    vis.destroy_window()
-
-def visualize_stem_groups_open3d(stem_groups, PointCloud):
-    vis = o3d.visualization.Visualizer()
-    vis.create_window()
-    np_points = pcl_to_numpy(PointCloud)
-    o3d_point_cloud = pcl_to_o3d(np_points)
-    vis.add_geometry(o3d_point_cloud)
-    
-    geometries = []
-
-    for group in stem_groups:
-        cloud_np = group["cloud"]
-        center = group["center"]
-
-        # 点群
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(cloud_np)
-        pcd.paint_uniform_color([0, 1, 0])
-        geometries.append(pcd)
-
-        # 重心（赤い球）
-        sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.1)
-        sphere.translate(center)
-        sphere.paint_uniform_color([1.0, 0, 0])
-        geometries.append(sphere)
-        vis.add_geometry(sphere)
-
-    vis.run()
-    vis.destroy_window()
-    # o3d.visualization.draw_geometries(geometries)
-
-def visualize_detected_trees_open3d(detected_trees, PointCloud):
-    vis = o3d.visualization.Visualizer()
-    vis.create_window()
-
-    # 点群の変換・表示
-    np_points = pcl_to_numpy(PointCloud)
-    o3d_point_cloud = pcl_to_o3d(np_points)
-    # o3d_point_cloud.paint_uniform_color([0.5, 0.5, 0.5])  # グレー
-    vis.add_geometry(o3d_point_cloud)
-
-    # 幹の円柱と重心（球）を追加
-    for (xc, yc, r) in detected_trees:
-        # 赤い円柱で幹を表現
-        height = 0.1  # 仮の幹高さ
-        cylinder = o3d.geometry.TriangleMesh.create_cylinder(radius=r, height=height)
-        cylinder.translate([xc, yc, 0.0])
-        cylinder.paint_uniform_color([1.0, 0.0, 0.0])
-        vis.add_geometry(cylinder)
-
-        # 青い球で幹の中心（1.2mの高さ）を可視化
-        sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.1)
-        sphere.translate([xc, yc, 1.2])
-        sphere.paint_uniform_color([0.0, 0.0, 1.0])
-        vis.add_geometry(sphere)
-
-    vis.run()
-    vis.destroy_window()
-
-def visualize_slice_and_circles(slice_points, detected_circles, z_height=2.5, point_color=[0.2, 0.8, 0.2]):
-
-    # 入力 shape に応じて z を追加
-    if slice_points.shape[1] == 2:
-        points_3d = np.hstack([slice_points, np.full((slice_points.shape[0], 1), z_height)])
-    elif slice_points.shape[1] == 3:
-        points_3d = slice_points.copy()
-    else:
-        raise ValueError("slice_points must have shape (N, 2) or (N, 3)")
-
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(points_3d)
-
-    colors = np.tile(np.array([point_color]), (len(points_3d), 1))
-    pcd.colors = o3d.utility.Vector3dVector(colors)
-
-    geometries = [pcd]
-
-    for (xc, yc, r) in detected_circles:
-        theta = np.linspace(0, 2 * np.pi, 100)
-        circle_points = np.array([[xc + r * np.cos(t), yc + r * np.sin(t), z_height] for t in theta])
-        lines = [[i, i + 1] for i in range(len(circle_points) - 1)]
-        lines.append([len(circle_points) - 1, 0])
-        circle = o3d.geometry.LineSet(
-            points=o3d.utility.Vector3dVector(circle_points),
-            lines=o3d.utility.Vector2iVector(lines)
-        )
-        circle.paint_uniform_color([1.0, 0.0, 0.0])
-        geometries.append(circle)
-
-    o3d.visualization.draw_geometries(geometries)
-
-
-def visualize_trees_with_pyvista(trees, tree_ids, diameters, heights):
-# def visualize_trees_with_pyvista(trees, tree_ids, diameters):
-    """
-    Trees を可視化し、各木の中心近くに ID, DBH, 座標を表示する。
-    
     Args:
-        trees: List[np.ndarray] - 各木の点群データ。
-        tree_ids: List[int] - 各木の識別番号。
-        diameters: List[float] - 各木の胸高直径（DBH）。
+        original_pcd (open3d.geometry.PointCloud): 元の（ダウンサンプリングされた）点群データ。
+        final_clusters (list of numpy.ndarray): 最終的に検出された幹クラスタのリスト。
     """
-    # 全ての木の Z 座標を取得
-    all_z_coords = np.concatenate([tree[:, 2] for tree in trees])
+    print("\n--- Visualizing Final Result on Original Point Cloud ---")
+    
+    points = np.asarray(original_pcd.points)
+    # まず全ての点を灰色で初期化
+    colors = np.full((points.shape[0], 3), [0.6, 0.6, 0.6])
 
-    # 全体の Z 座標範囲を計算
-    z_min = all_z_coords.min()
-    z_max = all_z_coords.max()
+    if not final_clusters:
+        print("No clusters to color.")
+    else:
+        # 高速な近傍探索のため、元の点群からKDTreeを作成
+        pcd_tree = o3d.geometry.KDTreeFlann(original_pcd)
+        
+        # 各クラスタにユニークな色を割り当てるためのカラーマップを準備
+        cmap = plt.get_cmap('viridis', len(final_clusters))
 
-    plotter = pv.Plotter()
+        print("Coloring final clusters...")
+        for i, cluster in enumerate(final_clusters):
+            if cluster.size == 0:
+                continue
+            
+            # カラーマップから色を取得 (RGBA -> RGB)
+            color = cmap(i)[:3]
+            
+            # クラスタ内の各点について、元の点群で最も近い点のインデックスを探し、色を塗る
+            for point in cluster:
+                # search_knn_vector_3dは、指定された点に最も近い1つの点を探す
+                [k, idx, _] = pcd_tree.search_knn_vector_3d(point, 1)
+                if k > 0:
+                    colors[idx[0]] = color
+    
+    # PyVistaで可視化
+    pv_cloud = pv.PolyData(points)
+    pv_cloud['colors'] = colors
 
-    for tree, tree_id, diameter, height in zip(trees, tree_ids, diameters, heights):
-    # for tree, tree_id, diameter in zip(trees, tree_ids, diameters):
-        # 点群データが numpy.ndarray の場合、そのまま使用
-        if isinstance(tree, np.ndarray):
-            cloud_points = tree
-        else:
-            raise ValueError("Expected tree to be a numpy.ndarray, but got type: {}".format(type(tree)))
-
-        # Z 座標を取得
-        z_coords = cloud_points[:, 2]
-
-        # 全体の Z 座標範囲に基づいて正規化
-        normalized_z = (z_coords - z_min) / (z_max - z_min)
-
-        # カラーマップを適用
-        colors = plt.cm.rainbow(normalized_z)[:, :3]  # RGBA の A を除外
-
-        # 点群をプロット
-        cloud = pv.PolyData(cloud_points)
-        cloud["colors"] = colors  # カラー情報を追加
-        plotter.add_mesh(cloud, scalars="colors", rgb=True, point_size=5, render_points_as_spheres=True)
-
-        # 木の中心（重心）を計算
-        tree_center = np.mean(cloud_points, axis=0)
-        x, y, z = tree_center  # 座標を展開
-
-        # ラベルを作成 (ID, DBH, 座標を表示)
-        # label = f"ID: {tree_id}\nDBH: {diameter:.2f} m\n({x:.2f}, {y:.2f}, {z:.2f})"
-        # ラベルを作成 (ID, DBH, 樹高を表示)
-        label = f"ID: {tree_id}\nDBH: {diameter:.2f} m\nHeight: {height:.2f} m"
-        plotter.add_point_labels([tree_center], [label], point_size=20, text_color='white')
-
+    print("Launching final visualization window...")
+    plotter = pv.Plotter(window_size=[1600, 1200])
+    # 点のサイズを大きくする (例: 5)
+    plotter.add_mesh(pv_cloud, scalars='colors', rgb=True, point_size=5, render_points_as_spheres=True)
+    plotter.add_axes()
+    plotter.background_color = 'white'
     plotter.show()
 
 
-# 樹木検出処理を行う関数
-def process_trees(PointCloudV):
-    My_treetool = tree_tool.treetool(PointCloudV)
+def process_trees(pcd):
+    """Open3Dの点群オブジェクトを入力として樹木検出処理全体を実行する"""
+    My_treetool = tree_tool.treetool(np.asarray(pcd.points))
     
-    # ステップ1: 地面除去
+    print("--- STEP 1: Ground Removal ---")
     My_treetool.step_1_remove_floor()
-    # デバッグ: non_ground_cloud と ground_cloud の確認
-    print(f"non_ground_cloud: {getattr(My_treetool, 'non_ground_cloud', 'Not Set')}")
-    print(f"ground_cloud: {getattr(My_treetool, 'ground_cloud', 'Not Set')}")
-    
-    if hasattr(My_treetool, 'non_ground_cloud') and hasattr(My_treetool, 'ground_cloud'):
-        # 両方がセットされていれば可視化
-        visualize_point_cloud_o3d([My_treetool.non_ground_cloud, My_treetool.ground_cloud], voxel_size=0.01)
-        visualize_point_cloud_o3d([My_treetool.non_ground_cloud], voxel_size=0.3)
-        visualize_point_cloud_o3d([My_treetool.ground_cloud], voxel_size=0.3)
-    else:
-        print("non_ground_cloud or ground_cloud is not set correctly.")
-    
-    # ステップ2: 法線フィルタリング
-    My_treetool.step_2_normal_filtering(verticality_threshold=0.08, curvature_threshold=0.10)
-    visualize_point_cloud_o3d([My_treetool.filtered_points.xyz, 
-                               My_treetool.filtered_points.xyz + My_treetool.filtered_normals * 0.05], voxel_size=0.3)
-    
-    My_treetool.step_2_5_detect_trees(use_ransac=True)
-    # My_treetool.step_2_5_detect_trees()
-    # ステップ3: ユークリッドクラスタリング
-    My_treetool.step_3_cluster_trees(tolerance=0.1, min_cluster_size=40, max_cluster_size=6000000)
-    visualize_point_cloud_o3d(My_treetool.cluster_list, voxel_size=0.3)
-    visualize_slice_and_circles(My_treetool.sliced_points, My_treetool.detected_circles)
-    visualize_detected_trees_open3d(My_treetool.detected_trees,PointCloudV)
-    
-    # ステップ4: 幹のグループ化
-    My_treetool.step_4_group_stems(max_distance=0.4)
-    visualize_point_cloud_o3d(My_treetool.complete_Stems, voxel_size=0.2)
-    visualize_stem_groups_open3d(My_treetool.stem_groups,PointCloudV)
-    
-    # ステップ5: 樹木の高さ調整
-    My_treetool.step_5_get_ground_level_trees(lowstems_height=5, cutstems_height=5)
-    visualize_point_cloud_o3d(My_treetool.low_stems, voxel_size=0.2)
-    
-    # ステップ6: 円筒モデルによる樹木モデリング
-    My_treetool.step_6_get_cylinder_tree_models(search_radius=0.1)
-    visualize_point_cloud_o3d([i['tree'] for i in My_treetool.finalstems] + My_treetool.visualization_cylinders, voxel_size=0.2)
-    
-    # ステップ7: 楕円フィット
+    # --- 可視化1: 地面除去の結果 ---
+    print("Visualizing: Ground (Green) and Non-Ground (Blue) points. Close window to continue.")
+    My_treetool.ground_cloud.paint_uniform_color([0.1, 0.9, 0.1])
+    My_treetool.non_ground_cloud.paint_uniform_color([0.2, 0.2, 0.9])
+    o3d.visualization.draw_geometries([My_treetool.ground_cloud, My_treetool.non_ground_cloud], window_name="Step 1: Ground Removal")
+
+    print("\n--- STEP 2: Normal Filtering ---")
+    My_treetool.step_2_normal_filtering()
+
+    print("\n--- STEP 2.5: Detect Trees ---")
+    My_treetool.step_2_5_detect_trees()
+    # --- 可視化2: 樹木検出の結果 ---
+    print("Visualizing: Sliced points (Green) and detected tree centers (Red spheres).")
+    slice_pcd = o3d.geometry.PointCloud()
+    slice_pcd.points = o3d.utility.Vector3dVector(My_treetool.sliced_points)
+    slice_pcd.paint_uniform_color([0.2, 0.8, 0.2])
+    spheres = []
+    for x, y, r in My_treetool.detected_trees:
+        sphere = o3d.geometry.TriangleMesh.create_sphere(radius=r if r > 0.01 else 0.1)
+        sphere.translate([x, y, 1.3])
+        sphere.paint_uniform_color([1.0, 0.1, 0.1])
+        spheres.append(sphere)
+    o3d.visualization.draw_geometries([slice_pcd] + spheres, window_name="Step 2.5: Tree Detection")
+
+    print("\n--- STEP 3: Rough Cluster Trees ---")
+    My_treetool.step_3_cluster_trees()
+
+    print("\n--- STEP 3.5: Refine Trunks with Cylinder Model ---")
+    My_treetool.step_3_5_refine_trunks_with_cylinder_model()
+    # --- 可視化3: 純化された幹のクラスタリング結果 ---
+    if My_treetool.cluster_list:
+        print("Visualizing: Refined tree trunks (each in a different color).")
+        clusters_pcd_list = []
+        for cluster_np in My_treetool.cluster_list:
+            cluster_pcd = o3d.geometry.PointCloud()
+            cluster_pcd.points = o3d.utility.Vector3dVector(cluster_np)
+            cluster_pcd.paint_uniform_color([random.random(), random.random(), random.random()])
+            clusters_pcd_list.append(cluster_pcd)
+        o3d.visualization.draw_geometries(clusters_pcd_list, window_name="Step 3.5: Refined Trunks")
+
+    print("\n--- STEP 4 & 5: Group and Filter Stems ---")
+    My_treetool.step_4_group_stems()
+    My_treetool.step_5_get_ground_level_trees()
+
+    print("\n--- STEP 6 & 7: Modeling and Fitting ---")
+    My_treetool.step_6_get_cylinder_tree_models()
     My_treetool.step_7_ellipse_fit()
-
-     # 樹木のIDとDBHを取得
-    tree_ids = list(range(1, len(My_treetool.finalstems) + 1))
-    diameters = [i['final_diameter'] for i in My_treetool.finalstems]
-    heights = [i.get("height", None) for i in My_treetool.finalstems] 
     
-    # 結果をCSVに保存
+    # --- 結果の保存 ---
     My_treetool.save_results(save_location='results/myresults.csv')
-    print("Results saved to 'results/myresults.csv'")
-
-    # 各木を可視化（Open3D）
-    # visualize_point_cloud_o3d([i['tree'] for i in My_treetool.finalstems], voxel_size=0.2, tree_ids=tree_ids)
-
-    # 各木を可視化（matplotlib）
-    # visualize_with_matplotlib([i['tree'] for i in My_treetool.finalstems], tree_ids)
+    print("\nResults saved to 'results/myresults.csv'")
     
-    # visualize_trees_with_pyvista([i['tree'] for i in My_treetool.finalstems], tree_ids)
-    # 各木を可視化 (PyVista)
-    visualize_trees_with_pyvista(
-        trees=[i['tree'] for i in My_treetool.finalstems],
-        tree_ids=tree_ids,
-        diameters=diameters,
-        heights=heights
-    )
+    return My_treetool
 
-    tree_ids = list(range(1, len(My_treetool.finalstems) + 1))
-    tree_centers = [np.mean(i['tree'], axis=0) for i in My_treetool.finalstems]
-    return My_treetool, tree_centers, tree_ids
-
-    # return My_treetool
 
 def main():
-    # 点群データの読み込み
-    # file_directory = 'data/downsampledlesscloudEURO2.pcd'  # このパスを実際のPCDファイルのパスに変更してください
-    # file_directory = 'data/rotated_test.pcd'
-    # file_directory = 'data/place1_1.pcd'
-    # file_directory = 'data/field.pcd'
-    # file_directory = 'data/scana5left.pcd'
-    # file_directory = 'data/4.pcd'
-    # file_directory = 'data/50th_mid.pcd'
-    # file_directory = 'data/50th_trim.pcd'
     file_directory = 'data/sample5.pcd'
-    # file_directory = 'data/downsample5_0.05.pcd'
-    # file_directory = 'data/dense_forest_with_gaps.pcd'
-    PointCloud = load_point_cloud(file_directory)
     
-    # 点群データのボクセル化
-    PointCloudV = voxelize_point_cloud(PointCloud, voxel_size=0.01)
-    print(f"PointCloudV shape after voxelization: {PointCloudV.shape}")
+    pcd = load_point_cloud_o3d(file_directory)
+    print(f"Loaded {len(pcd.points)} points.")
     
-    # 点群データをOpen3Dで可視化
-    # visualize_point_cloud_o3d([PointCloudV], voxel_size=0.3)
-    My_treetool, tree_centers, tree_ids = process_trees(PointCloudV)
-    debug_visualize_point_cloud_o3d(PointCloud, tree_centers, tree_ids)
+    voxel_size = 0.05
+    pcd_down = pcd.voxel_down_sample(voxel_size)
+    print(f"Downsampled to {len(pcd_down.points)} points.")
     
-    # 樹木検出処理
-    # My_treetool = process_trees(PointCloudV)
-    
-    # 結果の確認
-    print("Detected tree data and DBH saved to CSV.")
-    
+    # --- 樹木検出プロセスの実行 ---
+    My_treetool = process_trees(pcd_down)
+
+    # --- 最終結果の可視化 ---
+    if hasattr(My_treetool, 'low_stems') and My_treetool.low_stems:
+        visualize_final_colored_clusters(pcd_down, My_treetool.low_stems)
+    else:
+        print("No final clusters found to visualize.")
+
+    print("\nTree detection and visualization process finished.")
+
 if __name__ == "__main__":
     main()
