@@ -2,15 +2,20 @@
 name: treetool
 channels:
   - "conda-forge"
-  - "davidcaron"
-  - "conda-forge/label/gcc7"
+  - "defaults" # conda env createでデフォルトで使われるチャネルを追加
 dependencies:
-- python=3.7
-- davidcaron::pclpy
-# - conda-forge/label/gcc::qhull
-- jupyter
-- ipykernel
-- matplotlib
-- pip
-pip:
-- treetool
+  - python=3.9
+  - numpy
+  - pandas
+  - open3d
+  - hdbscan
+  - scikit-image # skimage.measure.CircleModelのために必要
+  - matplotlib
+  - pyvista # test_tree_detection.pyの可視化のために必要
+  - pip
+  - jupyter
+  - ipykernel
+  - pip:
+    # 幹のフィットに使用される「LsqEllipse」を提供するライブラリ。
+    # PyPI名: lsq-ellipse, Pythonコード内のインポート名: ellipse
+    - lsq-ellipse
