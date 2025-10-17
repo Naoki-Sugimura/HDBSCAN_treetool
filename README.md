@@ -11,9 +11,12 @@
 
 ```bash
 conda env create --file environment.yml
+```
 
 ### 2. 仮想環境のアクティベート
 
 環境が作成されたら以下のコマンドでアクティベートします．
 ```bash
 conda activate treetool
+```
+
