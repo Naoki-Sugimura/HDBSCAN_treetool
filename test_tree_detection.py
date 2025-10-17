@@ -54,7 +54,7 @@ def visualize_final_colored_clusters(original_pcd, final_clusters_points, final_
     pv_cloud['colors'] = colors
 
     plotter = pv.Plotter(window_size=[1600, 1200])
-    plotter.add_mesh(pv_cloud, scalars='colors', rgb=True, point_size=3, render_points_as_spheres=True)
+    plotter.add_mesh(pv_cloud, scalars='colors', rgb=True, point_size=5, render_points_as_spheres=True)
     plotter.add_axes()
     plotter.background_color = 'white'
 
@@ -129,6 +129,9 @@ def process_trees(pcd):
     My_treetool.save_results(save_location='results/myresults.csv')
     print("\nResults saved to 'results/myresults.csv'")
     
+    if hasattr(My_treetool, 'finalstems'):
+        print(f"Total number of trees successfully modeled: {len(My_treetool.finalstems)}")
+
     return My_treetool
 
 

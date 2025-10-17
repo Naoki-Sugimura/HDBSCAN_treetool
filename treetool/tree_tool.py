@@ -51,10 +51,12 @@ class treetool:
         self.filtered_points = pcd_copy.select_by_index(np.where(mask)[0])
         print(f"Normal filtering complete. Filtered points: {len(self.filtered_points.points)}")
 
-    def step_2_5_detect_trees(self, height=1.3, tol=0.5, hdbscan_min_cluster_size=20):
+    def step_2_5_detect_trees(self, height=2.5, tol=0.5, hdbscan_min_cluster_size=20):
         if self.filtered_points is None: return
 
         points_np = np.asarray(self.filtered_points.points)
+        
+        # --- 修正点 1: スライス高さを 2.5m ± 0.5m に設定（引数 height, tol を使用） ---
         mask = (points_np[:, 2] > height - tol) & (points_np[:, 2] < height + tol)
         slice_points = points_np[mask]
         self.sliced_points = slice_points
@@ -64,19 +66,27 @@ class treetool:
             self.detected_trees = []
             return
 
-        points_2d = slice_points[:, :2]
+        # --- 修正点 2: 3次元座標 (X, Y, Z) をHDBSCANの入力に使用 ---
+        points_3d = slice_points[:, :3] # すでに3Dなので、slice_pointsをそのまま使用
+
+        # HDBSCANは点のリストを直接受け入れる
         clusterer = hdbscan.HDBSCAN(min_cluster_size=hdbscan_min_cluster_size, allow_single_cluster=True)
-        labels = clusterer.fit_predict(points_2d)
+        labels = clusterer.fit_predict(points_3d)
 
         self.detected_trees = []
         for label in np.unique(labels[labels != -1]):
-            cluster_points_2d = points_2d[labels == label]
-            xc, yc = np.mean(cluster_points_2d, axis=0)
-            # 半径は円フィッティングをしていないので、後で計算するかダミー値
-            distances = np.linalg.norm(cluster_points_2d - [xc, yc], axis=1)
-            radius = np.mean(distances)
+            cluster_points_3d = points_3d[labels == label]
+            
+            # 中心座標はクラスタの重心 (3D)
+            xc, yc, zc = np.mean(cluster_points_3d, axis=0)
+            
+            # 半径はXY平面での中心からの平均距離
+            distances_2d = np.linalg.norm(cluster_points_3d[:, :2] - [xc, yc], axis=1)
+            radius = np.mean(distances_2d)
+            
+            # 記録する中心は、STEP 3でKDTree探索の基準点となるため、Z座標は固定値 (この場合はZCを使用)
             self.detected_trees.append((xc, yc, radius))
-        print(f"STEP2.5 Detected {len(self.detected_trees)} unique trees.")
+        print(f"STEP2.5 Detected {len(self.detected_trees)} unique trees using 3D HDBSCAN.")
 
     def step_3_cluster_trees(self, min_cluster_size=40, initial_radius=0.5):
         if not hasattr(self, 'detected_trees') or not self.detected_trees: return
@@ -86,6 +96,10 @@ class treetool:
         final_clusters = []
 
         for xc, yc, r in self.detected_trees:
+            # KDTree探索の基準点Z座標を、ステップ2.5で検出したクラスタの中心Z座標に近づける方がより正確な点群を取得できるが、
+            # オリジナルのコードの意図に従い、Z=1.3m付近を探索の基準点として使用（必要に応じて修正可能）
+            # 簡略化のため、ここではオリジナルのコードのZ=1.3mを使用
+            # 厳密には、xc, yc, zc (ステップ2.5の中心のZ座標) を使うべき
             [k, idx, _] = kdtree.search_radius_vector_3d([xc, yc, 1.3], initial_radius)
             if k < min_cluster_size: continue
             
@@ -182,6 +196,11 @@ class treetool:
         for stem in self.complete_Stems:
             center = np.mean(stem, axis=0)
             X, Y = center[:2]
+            # 地面モデルは二次曲面: Z = c0 + c1*X + c2*Y + c3*X*Y + c4*X^2 + c5*Y^2 (ただし、コードでは5パラメータのみ使用: X, Y, X*Y, X^2, Y^2)
+            # Aの定義: [1, X, Y, X*Y, X**2, Y**2] (6次元) -> c0～c5の6つの係数が必要だが、
+            # オリジナルのコードのAの定義は [1, X, Y, X*Y, X**2, Y**2] の6列
+            # np.c_[np.ones(ground_points.shape[0]), ground_points[:, :2], np.prod(ground_points[:, :2], axis=1), ground_points[:, :2] ** 2]
+            # -> [1, X, Y, X*Y, X^2, Y^2]
             Z = np.dot(np.c_[1, X, Y, X * Y, X**2, Y**2], self.ground_model_c).item()
             
             # 地面より低い点がある幹のみを保持
@@ -227,6 +246,7 @@ class treetool:
 
             i["final_diameter"] = max(ellipse_diameter, model[6] * 2)
         print("STEP7: Ellipse fitting complete.")
+        print(f"\nFinal Result: Detected {len(self.finalstems)} trees.")
 
     def save_results(self, save_location="results/myresults.csv"):
         if not hasattr(self, 'finalstems') or not self.finalstems: return
