@@ -185,45 +185,125 @@ class treetool:
         self.complete_Stems = self.cluster_list # このバージョンではグループ化を簡略化
         print(f"STEP4: Grouping simplified. Found {len(self.complete_Stems)} stems.")
 
+    # def step_5_get_ground_level_trees(self, lowstems_height=5):
+    #     if not hasattr(self, 'complete_Stems') or not self.complete_Stems: return
+            
+    #     ground_points = np.asarray(self.ground_cloud.points)
+    #     A = np.c_[np.ones(ground_points.shape[0]), ground_points[:, :2], np.prod(ground_points[:, :2], axis=1), ground_points[:, :2] ** 2]
+    #     self.ground_model_c, _, _, _ = np.linalg.lstsq(A, ground_points[:, 2], rcond=None)
+
+    #     self.stems_with_ground = []
+    #     for stem in self.complete_Stems:
+    #         center = np.mean(stem, axis=0)
+    #         X, Y = center[:2]
+    #         # 地面モデルは二次曲面: Z = c0 + c1*X + c2*Y + c3*X*Y + c4*X^2 + c5*Y^2 (ただし、コードでは5パラメータのみ使用: X, Y, X*Y, X^2, Y^2)
+    #         # Aの定義: [1, X, Y, X*Y, X**2, Y**2] (6次元) -> c0～c5の6つの係数が必要だが、
+    #         # オリジナルのコードのAの定義は [1, X, Y, X*Y, X**2, Y**2] の6列
+    #         # np.c_[np.ones(ground_points.shape[0]), ground_points[:, :2], np.prod(ground_points[:, :2], axis=1), ground_points[:, :2] ** 2]
+    #         # -> [1, X, Y, X*Y, X^2, Y^2]
+    #         Z = np.dot(np.c_[1, X, Y, X * Y, X**2, Y**2], self.ground_model_c).item()
+            
+    #         # 地面より低い点がある幹のみを保持
+    #         if np.min(stem[:, 2]) < (Z + lowstems_height):
+    #              self.stems_with_ground.append([stem, [X, Y, Z]])
+        
+    #     self.low_stems = [s[0] for s in self.stems_with_ground]
+    #     print(f"STEP5: {len(self.low_stems)} stems remain after ground-level filtering.")
+
+    # tree_tool.py の step_5_get_ground_level_trees 関数全体を置き換え
     def step_5_get_ground_level_trees(self, lowstems_height=5):
         if not hasattr(self, 'complete_Stems') or not self.complete_Stems: return
             
-        ground_points = np.asarray(self.ground_cloud.points)
-        A = np.c_[np.ones(ground_points.shape[0]), ground_points[:, :2], np.prod(ground_points[:, :2], axis=1), ground_points[:, :2] ** 2]
-        self.ground_model_c, _, _, _ = np.linalg.lstsq(A, ground_points[:, 2], rcond=None)
-
-        self.stems_with_ground = []
-        for stem in self.complete_Stems:
-            center = np.mean(stem, axis=0)
-            X, Y = center[:2]
-            # 地面モデルは二次曲面: Z = c0 + c1*X + c2*Y + c3*X*Y + c4*X^2 + c5*Y^2 (ただし、コードでは5パラメータのみ使用: X, Y, X*Y, X^2, Y^2)
-            # Aの定義: [1, X, Y, X*Y, X**2, Y**2] (6次元) -> c0～c5の6つの係数が必要だが、
-            # オリジナルのコードのAの定義は [1, X, Y, X*Y, X**2, Y**2] の6列
-            # np.c_[np.ones(ground_points.shape[0]), ground_points[:, :2], np.prod(ground_points[:, :2], axis=1), ground_points[:, :2] ** 2]
-            # -> [1, X, Y, X*Y, X^2, Y^2]
-            Z = np.dot(np.c_[1, X, Y, X * Y, X**2, Y**2], self.ground_model_c).item()
+        ground_points_z = np.asarray(self.ground_cloud.points)[:, 2]
+        if ground_points_z.size == 0:
+            print("DEBUG (STEP 5): Warning: No ground points found. Skipping step.")
+            self.stems_with_ground = []
+            return
             
-            # 地面より低い点がある幹のみを保持
-            if np.min(stem[:, 2]) < (Z + lowstems_height):
-                 self.stems_with_ground.append([stem, [X, Y, Z]])
+        # --- 地面モデルの修正: 地面点群の下位10%の平均Zを「地面のZ=0」とする ---
+        sorted_z = np.sort(ground_points_z)
+        N = int(len(sorted_z) * 0.1)
+        if N == 0: N = 1
+        
+        # 地面点群の最低点の平均Zを全体的な地面の基準とする
+        ground_z_reference = np.mean(sorted_z[:N])
+        # print(f"DEBUG (STEP 5): Calculated Ground Z Reference (Bottom 10% avg Z): {ground_z_reference:.3f} m") # <--- DEBUG
+        
+        self.ground_model_c = [0] * 6 # ダミー
+        
+        self.stems_with_ground = []
+        for i, stem in enumerate(self.complete_Stems):
+            X, Y = np.mean(stem, axis=0)[:2]
+            Z = ground_z_reference
+            
+            min_stem_z = np.min(stem[:, 2]) # <--- DEBUG
+            
+            # 地面より低い点がある幹、または地面より lowstems_height 以内の点がある幹を保持
+            if min_stem_z < (Z + lowstems_height):
+                self.stems_with_ground.append([stem, [X, Y, Z]]) # Zは ground_z_reference
+            # else:
+            #     print(f"DEBUG (STEP 5): Stem {i+1} filtered out. Min Z ({min_stem_z:.3f}m) >= Ground Ref + Height ({Z + lowstems_height:.3f}m)") # <--- DEBUG
         
         self.low_stems = [s[0] for s in self.stems_with_ground]
         print(f"STEP5: {len(self.low_stems)} stems remain after ground-level filtering.")
 
+    # tree_tool.py の step_6_get_cylinder_tree_models 関数全体を置き換え
     def step_6_get_cylinder_tree_models(self):
         self.finalstems = []
-        for stem, ground_info in self.stems_with_ground:
+        
+        # 新しい樹高計算のパラメータ
+        SLICE_THICKNESS = 0.1      # 0.1mごとにスライス
+        MIN_POINTS_PER_SLICE = 10  # 最低10個の点が必要
+        MAX_SEARCH_HEIGHT = 25.0   # 地面からの最大探索高さ 25.0m
+        
+        for idx, (stem, ground_info) in enumerate(self.stems_with_ground):
+            ground_z = ground_info[2]
+            relative_z = stem[:, 2] - ground_z
+            max_stem_relative_z = np.max(relative_z)
+            
+            # 探索範囲の上限を、幹の最高点と最大探索高さの低い方に設定
+            search_limit = min(max_stem_relative_z, MAX_SEARCH_HEIGHT)
+            
+            # print(f"\nDEBUG (STEP 6) - Stem {idx+1}:")
+            # print(f"  Ground Z: {ground_z:.3f} m, Max Stem Z (Rel): {max_stem_relative_z:.3f} m, Search Limit: {search_limit:.3f} m")
+            
+            # 最後に条件を満たしたスライスの高さ（上端）
+            last_valid_slice_height = 0.0
+            
+            # 地面から探索上限まで、0.1m刻みでスライスをチェック
+            for h in np.arange(SLICE_THICKNESS, search_limit + 0.001, SLICE_THICKNESS):
+                lower_bound = h - SLICE_THICKNESS
+                upper_bound = h
+                
+                # スライス内の点のマスク
+                slice_mask = (relative_z >= lower_bound) & (relative_z < upper_bound)
+                point_count = np.sum(slice_mask)
+                
+                # デバッグログは、点があるスライスのみを出力することで簡略化
+                # if point_count > 0:
+                #     print(f"  Slice {lower_bound:.2f}m to {upper_bound:.2f}m: Points = {point_count}")
+                
+                if point_count >= MIN_POINTS_PER_SLICE:
+                    # 条件を満たした場合、このスライスの最高点 (upper_bound) を有効な高さとして記録
+                    last_valid_slice_height = upper_bound
+                # else: 条件を満たさなくてもループは中断せず、次のスライスへ進む (連続性を無視)
+
+            # 最終的な樹高は、最後に有効だったスライスの高さ
+            height = last_valid_slice_height 
+
+            # 3. モデル情報と結果を保存（既存ロジック）
             center = np.mean(stem, axis=0)
             radius = np.mean(np.linalg.norm(stem[:, :2] - center[:2], axis=1))
-            height = np.max(stem[:, 2]) - ground_info[2]
-            
-            model = [center[0], center[1], center[2], 0, 0, 1, radius] # 垂直を仮定
+            model = [center[0], center[1], center[2], 0, 0, 1, radius] 
             
             self.finalstems.append({
                 "tree": stem, "model": model,
-                'ground': ground_info[2], "height": height
+                'ground': ground_z, "height": height 
             })
-        print(f"STEP6: Simplified modeling for {len(self.finalstems)} stems.")
+            
+            print(f"  FINAL CALCULATED HEIGHT: {height:.3f} m")
+            
+        print(f"STEP6: Modified height calculation (0.1m slice, min 10 points, max 25m search). Simplified modeling for {len(self.finalstems)} stems.")
         
     def step_7_ellipse_fit(self):
         if not hasattr(self, 'finalstems'): return
