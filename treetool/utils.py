@@ -58,6 +58,7 @@ def getPrincipalVectors(A):
     covariance_matrix = np.cov(A, rowvar=False)
     values, vectors = np.linalg.eig(covariance_matrix)
     
+    # 固有値は一般にソートされていないため、降順にソートする
     sort_indices = np.argsort(values)[::-1]
     return vectors[:, sort_indices].T, values[sort_indices]
 
@@ -68,3 +69,27 @@ def similarize(test, target):
     if angle_between_vectors(test, target) > np.pi/2:
         return -test
     return test
+    
+# --- 追加: 疑似曲率の計算関数 ---
+def get_curvature(neighbors_points):
+    """
+    点群の近傍点のPCAから、擬似曲率kappaを計算する。
+    κ = λ_1 / (λ_1 + λ_2 + λ_3)  (λ_1は最小固有値)
+    """
+    # getPrincipalVectorsは固有値を降順(λ_3, λ_2, λ_1)で返す
+    _, values = getPrincipalVectors(neighbors_points)
+    
+    if len(values) < 3:
+        return 0.0 
+        
+    # 固有値の降順: values[0] = λ_3 (最大), values[1] = λ_2 (中間), values[2] = λ_1 (最小)
+    lambda_1 = values[2] # 最小
+    lambda_2 = values[1] 
+    lambda_3 = values[0] # 最大
+    
+    sum_lambda = lambda_1 + lambda_2 + lambda_3
+    
+    if sum_lambda < 1e-8:
+        return 0.0
+        
+    return lambda_1 / sum_lambda

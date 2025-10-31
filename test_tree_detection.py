@@ -136,7 +136,7 @@ def process_trees(pcd):
 
 
 def main():
-    file_directory = 'data/sample3.pcd'
+    file_directory = 'data/sample5.pcd'
     
     pcd = load_point_cloud_o3d(file_directory)
     print(f"Loaded {len(pcd.points)} points.")
